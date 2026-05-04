@@ -1,0 +1,12 @@
+duckdb>=0.10.0
+requests
+tqdm
+polars
+pyarrow
+typer
+ete4
+colorspacious
+py5
+geoopt
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch

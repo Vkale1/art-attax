@@ -1,0 +1,24 @@
+services:
+  art-attax:
+    build: .
+    image: art-attax
+    container_name: art-attax
+
+    # Mount local directories so data and outputs persist outside the container.
+    # With Colima on Mac, paths under your home directory are auto-shared.
+    volumes:
+      - ./data:/data          # DuckDB + Parquet files live here
+      - ./outputs:/outputs    # paintings saved here
+      - .:/app                # live code mount — edits in PyCharm reflect immediately
+
+    # Load env vars from your real .env file, which lives one level up
+    # outside the repo so it is never committed or seen by Claude Code
+    env_file:
+      - ../.env
+
+    # Keep container alive for exec commands during development
+    stdin_open: true
+    tty: true
+
+    # Default command — override per task (see below)
+    command: ["python", "main.py"]
