@@ -1,4 +1,5 @@
 duckdb>=0.10.0
+matplotlib
 requests
 tqdm
 polars
