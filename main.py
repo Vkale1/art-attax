@@ -39,7 +39,7 @@ def paint(
     output: Path = typer.Option(None, help="Output PNG path (default: outputs/<stem>.png)"),
     width: int = typer.Option(2400, help="Canvas width in pixels"),
     height: int = typer.Option(3200, help="Canvas height in pixels"),
-    strokes: int = typer.Option(8_000, help="Total number of brushstrokes"),
+    strokes: int = typer.Option(400, help="Number of main brushstrokes (plus a fixed underpainting layer)"),
 ) -> None:
     """Phase 3 — render a painting from an abundance file."""
     from paint.loader import load

@@ -1,0 +1,8 @@
+.env
+*.duckdb
+*.parquet
+outputs/
+data/
+__pycache__/
+*.pyc
+.DS_Store
