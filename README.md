@@ -2,10 +2,10 @@
 
 > **TL;DR: just paint!**
 > Download [`app/art-attax.html`](app/art-attax.html).
-> Double-click it, and drop in your abundance file or press **Try an example**.
+> Double-click it, and drop in your **GTDB taxonomy** abundance file: see [Input format](#input-format) or press **Try an example**.
 > No installation, works offline, and your data never leaves your computer.
 
-**Abstract paintings generated from microbial abundance data.**
+**Abstract paintings generated from Bacterial microbial abundance data.**
 
 art-attax turns a microbiome profile into a painting. Every bacterial taxon in the
 [GTDB](https://gtdb.ecogenomic.org/) tree gets its own colour, chosen so that related
