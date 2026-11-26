@@ -4,10 +4,9 @@ services:
     image: art-attax
     container_name: art-attax
 
-    # Mount local directories so data and outputs persist outside the container.
+    # Mount local directories so outputs persist outside the container.
     # With Colima on Mac, paths under your home directory are auto-shared.
     volumes:
-      - ./data:/data          # DuckDB + Parquet files live here
       - ./outputs:/outputs    # paintings saved here
       - .:/app                # live code mount — edits in PyCharm reflect immediately
 

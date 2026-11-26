@@ -5,10 +5,9 @@ art-attax — generative paintings from GTDB microbial abundance data.
 Commands:
     paint             render a painting from an abundance TSV (uses the bundled palette)
 
-Maintainer commands, only needed to rebuild the palette for a new GTDB release:
-    build-db          Phase 1: parse GTDB taxonomy TSV → DuckDB + Parquet
-    assign-colours    Phase 2: walk the taxonomy tree → colour + brush map
-    export-palette    write the coloured taxa to palette/
+Maintainer commands:
+    build-palette     download a GTDB release, colour it, write palette/ and the app
+    build-app         rebuild app/art-attax.html after editing app/template.html
 """
 
 import os
@@ -23,23 +22,21 @@ OUTPUT_DIR = Path(os.environ.get("OUTPUT_PATH", "/outputs"))
 
 
 @app.command()
-def build_db() -> None:
-    """Phase 1 — parse GTDB taxonomy TSV into DuckDB."""
-    from db.build_db import main
-    main()
+def build_palette(
+    release: int = typer.Option(..., help="GTDB release number, e.g. 232"),
+    taxonomy: Path = typer.Option(
+        None, help="Use this bac120_taxonomy .tsv.gz instead of downloading it (it is kept)",
+    ),
+) -> None:
+    """Download a GTDB release, colour every taxon and write palette/gtdb_r<release>_colours.parquet."""
+    from palette.build import main
+    main(release, taxonomy)
 
 
 @app.command()
-def assign_colours() -> None:
-    """Phase 2 — walk the taxonomy tree and write colour/brush values."""
-    from db.assign_colours import main
-    main()
-
-
-@app.command()
-def export_palette() -> None:
-    """Export the coloured taxa to the palette bundled with the repo."""
-    from db.export_palette import main
+def build_app() -> None:
+    """Rebuild the standalone app (app/art-attax.html) from the template and newest palette."""
+    from app.build import main
     main()
 
 
@@ -56,7 +53,7 @@ def paint(
     ),
     fuzzy: bool = typer.Option(False, "--fuzzy", help="Also paint taxa that aren't exact GTDB names, using the closest match."),
 ) -> None:
-    """Phase 3 — render a painting from an abundance file."""
+    """Render a painting from an abundance file."""
     from paint.loader import load
     from paint.composer import compose
     from paint.spread import spread_hues

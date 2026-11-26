@@ -1,22 +1,15 @@
-#!/usr/bin/env python3
 """
-Phase 2: Walk the GTDB taxonomy tree → assign colour + brush style.
+Give every GTDB taxon a colour by walking the taxonomy tree. Deterministic, no training.
 
-Reads:  /data/gtdb_r232.duckdb  (taxa table with NULL colour columns)
-Writes: hue/saturation/lightness/brush_style into taxa table
-        refreshes /data/taxa.parquet
+Each taxon owns a slice of the colour wheel that its children divide, weighted by
+sqrt(species count); hue is the middle of the slice. Classes, orders and families
+shift lightness and saturation, and their descendants inherit the shift.
 """
 
 import math
 from collections import defaultdict
-from pathlib import Path
 
-import duckdb
 import polars as pl
-
-DATA_DIR = Path("/data")
-DB_PATH = DATA_DIR / "gtdb_r232.duckdb"
-PARQUET_PATH = DATA_DIR / "taxa.parquet"
 
 RANKS = ["domain", "phylum", "class", "order", "family", "genus", "species"]
 
@@ -43,16 +36,6 @@ TONE_SHIFT = {
 
 # Golden-ratio steps spread any number of siblings evenly without repeats
 GOLDEN = (math.sqrt(5) - 1) / 2
-
-
-def load_taxa(db_path: Path) -> pl.DataFrame:
-    con = duckdb.connect(str(db_path), read_only=True)
-    try:
-        return con.execute(
-            "SELECT taxon_id, lineage, rank, parent_lineage FROM taxa ORDER BY taxon_id"
-        ).pl()
-    finally:
-        con.close()
 
 
 def species_counts(lineages: list[str]) -> dict[str, int]:
@@ -125,83 +108,3 @@ def colour_tree(df: pl.DataFrame) -> tuple[list[float], list[float], list[float]
         saturation.append(sat)
         lightness.append(light)
     return hue, saturation, lightness
-
-
-def write_colours(
-    db_path: Path,
-    df: pl.DataFrame,
-    hue: list[float],
-    saturation: list[float],
-    lightness: list[float],
-) -> None:
-    brush = df["rank"].map_elements(
-        lambda r: BRUSH_BY_RANK.get(r, "medium"), return_dtype=pl.String
-    )
-    updates = pl.DataFrame({
-        "taxon_id":    df["taxon_id"],
-        "hue":         pl.Series(hue, dtype=pl.Float64),
-        "saturation":  pl.Series(saturation, dtype=pl.Float64),
-        "lightness":   pl.Series(lightness, dtype=pl.Float64),
-        "brush_style": brush,
-    })
-    con = duckdb.connect(str(db_path))
-    try:
-        con.register("updates", updates)
-        con.execute("""
-            UPDATE taxa
-               SET hue         = updates.hue,
-                   saturation  = updates.saturation,
-                   lightness   = updates.lightness,
-                   brush_style = updates.brush_style
-              FROM updates
-             WHERE taxa.taxon_id = updates.taxon_id
-        """)
-    finally:
-        con.close()
-
-
-def refresh_parquet(db_path: Path, parquet_path: Path) -> None:
-    con = duckdb.connect(str(db_path), read_only=True)
-    try:
-        df = con.execute("SELECT * FROM taxa").pl()
-    finally:
-        con.close()
-    df.write_parquet(str(parquet_path))
-
-
-def print_sample(db_path: Path) -> None:
-    con = duckdb.connect(str(db_path), read_only=True)
-    try:
-        rows = con.execute("""
-            SELECT rank, name, hue, saturation, lightness, brush_style
-              FROM taxa
-             ORDER BY rank, taxon_id
-             LIMIT 14
-        """).fetchall()
-    finally:
-        con.close()
-    print(f"\n  {'rank':<12} {'name':<35} {'hue':>7} {'sat':>6} {'lig':>6}  brush")
-    for rank, name, h, s, l, b in rows:
-        print(f"  {rank:<12} {name:<35} {h:>7.1f} {s:>6.3f} {l:>6.3f}  {b}")
-
-
-def main() -> None:
-    print(f"Loading taxa from {DB_PATH} ...")
-    df = load_taxa(DB_PATH)
-    print(f"  {len(df):,} taxa loaded")
-
-    print("Sharing out the colour wheel ...")
-    hue, saturation, lightness = colour_tree(df)
-
-    print(f"Writing colours to {DB_PATH} ...")
-    write_colours(DB_PATH, df, hue, saturation, lightness)
-
-    print(f"Refreshing {PARQUET_PATH} ...")
-    refresh_parquet(DB_PATH, PARQUET_PATH)
-
-    print_sample(DB_PATH)
-    print("\nDone.")
-
-
-if __name__ == "__main__":
-    main()
