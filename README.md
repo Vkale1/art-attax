@@ -7,6 +7,11 @@ art-attax turns a microbiome profile into a painting. Every bacterial taxon in t
 taxa get related colours, and the abundance of each taxon in your sample decides how
 much of the canvas it claims.
 
+> **TL;DR: just paint!**
+> Download [`app/art-attax.html`](app/art-attax.html) (**Download raw file** button, top right),
+> double-click it, and drop in your abundance file or press **Try an example**.
+> No installation, works offline, and your data never leaves your computer.
+
 <p align="center">
   <img src="docs/images/gut_microbiome.jpg" alt="Abstract flat-brush painting generated from an example gut microbiome" width="520">
   <br>
