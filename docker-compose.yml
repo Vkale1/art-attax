@@ -11,11 +11,6 @@ services:
       - ./outputs:/outputs    # paintings saved here
       - .:/app                # live code mount — edits in PyCharm reflect immediately
 
-    # Load env vars from your real .env file, which lives one level up
-    # outside the repo so it is never committed or seen by Claude Code
-    env_file:
-      - ../.env
-
     # Keep container alive for exec commands during development
     stdin_open: true
     tty: true

@@ -5,7 +5,7 @@
 - Do not access files outside this directory
 - Do not read ~/.ssh, ~/.env, or any file outside this project folder
 - Do not execute network commands unless explicitly asked
-- Never read or modify .env — use env.example to understand the variable names only
+- Never read or modify any .env file
 
 ---
 
@@ -34,17 +34,22 @@ in the painting.
 - Two tables: `taxa` (one row per unique taxon) and `genomes` (one row per genome)
 - A flat Parquet export (`data/taxa.parquet`) is also written for fast bulk reads
 
-**Phase 2 — AI (colour assignment)** (`db/assign_colours.py`)
-- Trains 2D Poincaré embeddings on the child→parent edges using `geoopt`
-- Hyperbolic space naturally represents hierarchies — taxa close in the tree land
-  close together, root near the centre, species near the boundary
-- Disk coordinates → colour: angle = hue, radius = saturation, lightness fixed at 0.5
+**Phase 2 — Colour assignment** (`db/assign_colours.py`)
+- Walks the taxonomy tree directly; deterministic, no training
+- Each taxon owns a slice of hues that its children divide, weighted by sqrt(species count);
+  hue = middle of the slice. Big phyla are scattered around the wheel
+- Class/order/family shift lightness and saturation; descendants inherit the shift
 - A `brush_style` per rank is also written, but the current painter no longer uses it
 - Colour values are written back into the DuckDB taxa table and Parquet is refreshed
+- `db/export_palette.py` then writes `palette/gtdb_r232_colours.parquet`, which **is**
+  committed. Users paint from it, so phases 1–2 are maintainer-only
+- The palette is CC BY-SA 4.0 (derived from GTDB), unlike the MIT code
 
 **Phase 3 — Painting** (`paint/`)
 - `loader.py` reads an abundance TSV (full lineage or species name + count) and joins
-  to the DB; exact lineage match first, species-name fallback, unmatched rows dropped
+  to the palette (`palette.py`; override with env var `GTDB_PALETTE_PATH`, e.g. via `docker-compose run -e`); exact GTDB names only;
+  others are reported, not painted, unless `--fuzzy` (name → suffix → ancestor)
+- `spread.py` optionally stretches a sample's hues apart (`--spread`, off by default)
 - `composer.py` plans the strokes:
   - underpainting grid of big translucent blocks so no bare canvas shows
   - stroke budget split by abundance; abundant taxa also get *bigger* strokes
@@ -61,10 +66,11 @@ in the painting.
 ### Key design decisions
 - DuckDB over SQLite: better analytical query performance at GTDB scale
 - Parquet alongside DuckDB: fast flat reads during painting without loading full DB
-- Poincaré embeddings over hand-crafted colour rules: mathematically principled,
-  phylogenetic distance maps cleanly to colour distance
+- Direct tree colouring over Poincaré embeddings: the trained embeddings never left the
+  centre of the disk, so species hues were close to random
 - py5 for painting: designed for generative art, expressive brushstroke control
 - Hue is the taxon's identity — the painter jitters tone but never changes hue
+  (except the opt-in `--spread`)
 - No metadata enrichment: the tool is deliberately scoped to taxonomy + abundance only
 
 ---
@@ -74,7 +80,6 @@ in the painting.
 art-attax/
 ├── CLAUDE.md               ← you are here
 ├── .claudeignore
-├── env.example             ← copy to ../.env (one level ABOVE the repo)
 ├── .gitignore
 ├── Dockerfile
 ├── docker-compose.yml
@@ -82,14 +87,18 @@ art-attax/
 ├── example.jpg             ← style reference for the painting look
 ├── db/
 │   ├── build_db.py         ← Phase 1: parse GTDB TSV → DuckDB + Parquet
-│   └── assign_colours.py   ← Phase 2: Poincaré embeddings → colour map
+│   ├── assign_colours.py   ← Phase 2: taxonomy tree → colour map
+│   └── export_palette.py   ← write the committed palette
+├── palette/                ← prebuilt colours, committed
 ├── paint/
-│   ├── loader.py           ← Phase 3: load abundance TSV, join to DB
+│   ├── palette.py          ← locate + load the palette
+│   ├── loader.py           ← Phase 3: load abundance TSV, join to palette
+│   ├── spread.py           ← optional hue spreading
 │   ├── composer.py         ← Phase 3: stroke planning / canvas layout
 │   ├── brushes.py          ← Phase 3: flat-brush stroke rendering with py5
 │   └── key.py              ← sunburst colour key
 ├── tests/fixtures/
-│   └── gut_microbiome.tsv  ← example abundance input
+│   └── gut_microbiome_r232.tsv  ← example abundance input
 ├── main.py                 ← CLI entry point (Typer)
 ├── data/                   ← mounted volume, not committed
 │   ├── bac120_taxonomy.tsv.gz
@@ -107,22 +116,23 @@ art-attax/
 - IDE: PyCharm (JetBrains)
 - Claude Code: terminal CLI + JetBrains plugin
 
-Start Colima before any Docker commands, and make sure `../.env` exists
-(compose fails without it):
+Start Colima before any Docker commands:
 ```bash
 colima start
-cp env.example ../.env       # first time only
 docker-compose build         # first time / after requirements change
 ```
 
 Run the pipeline inside the container:
 ```bash
+docker-compose run --rm art-attax python main.py paint tests/fixtures/gut_microbiome_r232.tsv
+docker-compose run --rm art-attax python -m paint.key             # colour key
+
+# Maintainer only: rebuild the palette for a new GTDB release
 docker-compose run --rm art-attax python main.py build-db         # Phase 1
 docker-compose run --rm art-attax python main.py assign-colours   # Phase 2
-docker-compose run --rm art-attax python main.py paint tests/fixtures/gut_microbiome.tsv
-docker-compose run --rm art-attax python -m paint.key             # colour key
+docker-compose run --rm art-attax python main.py export-palette
 ```
-`paint` options: `--output`, `--width` (2400), `--height` (3200), `--strokes` (400).
+`paint` options: `--output`, `--width` (2400), `--height` (3200), `--strokes` (400), `--spread` (0), `--fuzzy` (off).
 Use e.g. `--width 3200 --height 1800` for a landscape canvas like `example.jpg`.
 
 ---
@@ -132,7 +142,6 @@ Use e.g. `--width 3200 --height 1800` for a landscape canvas like `example.jpg`.
 |---|---|
 | Database | DuckDB |
 | Flat data | Parquet (via DuckDB / polars) |
-| Hyperbolic embeddings | geoopt (PyTorch) |
 | Painting | py5 |
 | Colour key | matplotlib |
 | CLI | Typer |
@@ -148,13 +157,11 @@ ETE4 and colorspacious are in `requirements.txt` but not currently used.
 - [x] build_db.py — working; DB + Parquet built in `data/`
 - [x] assign_colours.py — working
 - [x] paint/ modules — working; abstract flat-brush style
-- [x] main.py CLI — `build-db`, `assign-colours`, `paint`
+- [x] main.py CLI — `build-db`, `assign-colours`, `export-palette`, `paint`
 - [x] Colour key (`paint/key.py`)
 
 ## Known issues / next steps
-- Only 6 of 22 taxa in `tests/fixtures/gut_microbiome.tsv` match R232 — the fixture uses
-  older names (e.g. `Firmicutes_A`). Update the fixture and/or make matching more forgiving.
-- Palette is entirely data-driven (currently cool blues/olives); an optional palette
+- Palette is entirely data-driven (muted, full wheel); an optional palette
   shift (e.g. warm, like `example.jpg`) that preserves relative hue relationships could be added.
 - `key.py` is not exposed as a CLI command.
 

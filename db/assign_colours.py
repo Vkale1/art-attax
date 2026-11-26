@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phase 2: Train Poincaré embeddings on GTDB taxa → assign colour + brush style.
+Phase 2: Walk the GTDB taxonomy tree → assign colour + brush style.
 
 Reads:  /data/gtdb_r232.duckdb  (taxa table with NULL colour columns)
 Writes: hue/saturation/lightness/brush_style into taxa table
@@ -8,15 +8,11 @@ Writes: hue/saturation/lightness/brush_style into taxa table
 """
 
 import math
-import random
+from collections import defaultdict
 from pathlib import Path
 
 import duckdb
-import geoopt
-import numpy as np
 import polars as pl
-import torch
-from tqdm import trange
 
 DATA_DIR = Path("/data")
 DB_PATH = DATA_DIR / "gtdb_r232.duckdb"
@@ -34,12 +30,19 @@ BRUSH_BY_RANK = {
     "species": "hair",
 }
 
-EMBED_DIM = 2
-EPOCHS = 200
-LR = 0.05
-NEG_SAMPLES = 10
-BATCH_SIZE = 1024
-SEED = 42
+# Muted, like mixed oil paint (median tones of example.jpg)
+BASE_SATURATION = 0.45
+BASE_LIGHTNESS = 0.51
+
+# Largest (lightness, saturation) change a taxon of this rank makes to its parent's tone
+TONE_SHIFT = {
+    "class":  (0.10, 0.10),
+    "order":  (0.07, 0.10),
+    "family": (0.04, 0.05),
+}
+
+# Golden-ratio steps spread any number of siblings evenly without repeats
+GOLDEN = (math.sqrt(5) - 1) / 2
 
 
 def load_taxa(db_path: Path) -> pl.DataFrame:
@@ -52,96 +55,75 @@ def load_taxa(db_path: Path) -> pl.DataFrame:
         con.close()
 
 
-def build_pairs(df: pl.DataFrame) -> tuple[list[int], list[int]]:
-    """Return (child_indices, parent_indices) index pairs into df."""
-    lineage_to_idx = {row["lineage"]: i for i, row in enumerate(df.iter_rows(named=True))}
-    children, parents = [], []
-    for i, row in enumerate(df.iter_rows(named=True)):
-        parent_lin = row["parent_lineage"]
-        if parent_lin is not None and parent_lin in lineage_to_idx:
-            children.append(i)
-            parents.append(lineage_to_idx[parent_lin])
-    return children, parents
+def species_counts(lineages: list[str]) -> dict[str, int]:
+    """Number of species under every lineage (a species counts itself)."""
+    counts: dict[str, int] = defaultdict(int)
+    for lineage in lineages:
+        parts = lineage.split(";")
+        if len(parts) == len(RANKS):
+            for depth in range(1, len(parts) + 1):
+                counts[";".join(parts[:depth])] += 1
+    return counts
 
 
-def train_poincare(n: int, children: list[int], parents: list[int]) -> torch.Tensor:
-    """Train Poincaré embeddings and return (n, 2) coordinate tensor."""
-    torch.manual_seed(SEED)
-    random.seed(SEED)
+def colour_tree(df: pl.DataFrame) -> tuple[list[float], list[float], list[float]]:
+    """
+    Share the colour wheel out down the taxonomy, like slices of cake.
 
-    ball = geoopt.PoincareBall(c=1.0)
-    raw = torch.randn(n, EMBED_DIM) * 0.01
-    embeddings = geoopt.ManifoldParameter(raw, manifold=ball)
-    optimizer = geoopt.optim.RiemannianSGD([embeddings], lr=LR, stabilize=10)
+    Each taxon owns a slice of hues, which its children divide between them.
+    Slices are weighted by the square root of species count, so big clades get
+    more range without taking over. A taxon's hue is the middle of its slice.
+    Classes, orders and families also shift lightness and saturation, and their
+    descendants inherit the shift, so relatives in one slice stay distinguishable.
 
-    pos_children = torch.tensor(children, dtype=torch.long)
-    pos_parents = torch.tensor(parents, dtype=torch.long)
-    n_pairs = len(children)
+    Returns (hue, saturation, lightness) lists in df row order.
+    """
+    counts = species_counts(df["lineage"].to_list())
+    children: dict[str, list[str]] = defaultdict(list)
+    ranks: dict[str, str] = {}
+    roots = []
+    for lineage, rank, parent in df.select("lineage", "rank", "parent_lineage").iter_rows():
+        ranks[lineage] = rank
+        if parent is None:
+            roots.append(lineage)
+        else:
+            children[parent].append(lineage)
 
-    for epoch in trange(EPOCHS, desc="Training Poincaré embeddings"):
-        perm = torch.randperm(n_pairs)
-        pos_children = pos_children[perm]
-        pos_parents = pos_parents[perm]
+    # lineage → (slice start, slice end, saturation, lightness)
+    placed = {r: (0.0, 360.0, BASE_SATURATION, BASE_LIGHTNESS) for r in roots}
+    queue = list(roots)
+    while queue:
+        parent = queue.pop()
+        kids = children.get(parent)
+        if not kids:
+            continue
+        start, end, p_sat, p_light = placed[parent]
+        kids.sort(key=lambda k: (-counts[k], k))
+        step = {kid: (i * GOLDEN) % 1 for i, kid in enumerate(kids)}
 
-        epoch_loss = 0.0
-        n_batches = 0
-
-        for start in range(0, n_pairs, BATCH_SIZE):
-            end = min(start + BATCH_SIZE, n_pairs)
-            batch_c = pos_children[start:end]
-            batch_p = pos_parents[start:end]
-            bsz = len(batch_c)
-
-            optimizer.zero_grad()
-
-            u = embeddings[batch_c]      # (bsz, 2)
-            v_pos = embeddings[batch_p]  # (bsz, 2)
-
-            neg_idx = torch.randint(0, n, (bsz, NEG_SAMPLES))
-            v_neg = embeddings[neg_idx]  # (bsz, neg, 2)
-
-            d_pos = ball.dist(u, v_pos)  # (bsz,)
-
-            u_exp = u.unsqueeze(1).expand_as(v_neg)
-            d_neg = ball.dist(
-                u_exp.reshape(-1, EMBED_DIM),
-                v_neg.reshape(-1, EMBED_DIM),
-            ).reshape(bsz, NEG_SAMPLES)   # (bsz, neg)
-
-            # Cross-entropy loss: -log(e^{-d_pos} / (e^{-d_pos} + Σ e^{-d_neg}))
-            log_denom = torch.logsumexp(
-                torch.cat([-d_pos.unsqueeze(1), -d_neg], dim=1), dim=1
+        # Scatter big phyla around the wheel instead of bunching them together
+        in_order = sorted(kids, key=step.get) if ranks[kids[0]] == "phylum" else kids
+        total = sum(math.sqrt(counts[k]) for k in kids)
+        cursor = start
+        for kid in in_order:
+            span = (end - start) * math.sqrt(counts[kid]) / total
+            d_light, d_sat = TONE_SHIFT.get(ranks[kid], (0.0, 0.0))
+            # The biggest child keeps its parent's tone; siblings alternate around it
+            offset = 2 * step[kid] if step[kid] < 0.5 else 2 * step[kid] - 2
+            placed[kid] = (
+                cursor, cursor + span,
+                p_sat + d_sat * offset,
+                p_light + d_light * offset,
             )
-            loss = (d_pos + log_denom).mean()
+            cursor += span
+        queue.extend(kids)
 
-            loss.backward()
-            optimizer.step()
-
-            epoch_loss += loss.item()
-            n_batches += 1
-
-        if (epoch + 1) % 50 == 0:
-            avg = epoch_loss / max(n_batches, 1)
-            print(f"  epoch {epoch + 1}/{EPOCHS}  loss={avg:.4f}")
-
-    return embeddings.detach()
-
-
-def coords_to_hsl(coords: torch.Tensor) -> tuple[list[float], list[float], list[float]]:
-    """Map (n, 2) Poincaré disk coords to HSL lists."""
-    x = coords[:, 0].numpy()
-    y = coords[:, 1].numpy()
-
-    # Angle → hue [0, 360)
-    hue = (np.degrees(np.arctan2(y, x)) % 360).tolist()
-
-    # Radius → saturation [0.3, 0.9]
-    # Species cluster near boundary (high radius), root near origin (low radius)
-    radius = np.sqrt(x**2 + y**2)
-    saturation = np.clip(0.3 + 0.6 * radius, 0.3, 0.9).tolist()
-
-    lightness = [0.5] * len(hue)
-
+    hue, saturation, lightness = [], [], []
+    for lineage in df["lineage"].to_list():
+        start, end, sat, light = placed[lineage]
+        hue.append(((start + end) / 2) % 360)
+        saturation.append(sat)
+        lightness.append(light)
     return hue, saturation, lightness
 
 
@@ -208,15 +190,8 @@ def main() -> None:
     df = load_taxa(DB_PATH)
     print(f"  {len(df):,} taxa loaded")
 
-    print("Building parent-child pairs ...")
-    children, parents = build_pairs(df)
-    print(f"  {len(children):,} edges")
-
-    print("Training Poincaré embeddings ...")
-    coords = train_poincare(len(df), children, parents)
-
-    print("Mapping coordinates to HSL ...")
-    hue, saturation, lightness = coords_to_hsl(coords)
+    print("Sharing out the colour wheel ...")
+    hue, saturation, lightness = colour_tree(df)
 
     print(f"Writing colours to {DB_PATH} ...")
     write_colours(DB_PATH, df, hue, saturation, lightness)

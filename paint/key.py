@@ -2,22 +2,24 @@
 Generate a sunburst colour key showing taxa colours by rank.
 
 Rings (inner → outer): phylum → class → order
-Wedge size is proportional to number of species descendants.
-Phylum names are labelled where the wedge is large enough to read.
+Wedge size follows the square root of the number of species descendants, so small
+phyla stay visible and wedges match each taxon's share of the colour wheel.
+Phylum names are labelled inside wedges wide enough to read (4° or more).
 
 Output: /outputs/colour_key.png
 """
 
 import colorsys
+import math
 from pathlib import Path
 
-import duckdb
+import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 
-DATA_DIR = Path("/data")
-DB_PATH = DATA_DIR / "gtdb_r232.duckdb"
+from paint.palette import PALETTE_PATH, load_palette
+
 OUTPUT = Path("/outputs/colour_key.png")
 
 # Radii for each ring (inner, outer)
@@ -27,19 +29,8 @@ RINGS = {
     "order":  (0.70, 0.85),
 }
 
-MIN_LABEL_SPAN = 0.06   # radians — phyla narrower than this don't get a label
-MIN_DRAW_SPAN  = 0.003  # radians — wedges narrower than this are skipped
-
-
-def load_taxa(db_path: Path) -> pl.DataFrame:
-    con = duckdb.connect(str(db_path), read_only=True)
-    try:
-        return con.execute(
-            "SELECT lineage, rank, name, parent_lineage, hue, saturation, lightness "
-            "FROM taxa"
-        ).pl()
-    finally:
-        con.close()
+MIN_LABEL_SPAN = 0.07   # radians (4°) — phyla narrower than this don't get a label
+MIN_DRAW_SPAN  = 0.0008 # radians — wedges narrower than this are skipped
 
 
 def species_counts(df: pl.DataFrame) -> dict[str, int]:
@@ -59,7 +50,7 @@ def assign_angles(
 ) -> dict[str, tuple[float, float]]:
     """
     Return {lineage: (start_angle, end_angle)} for all nodes,
-    distributing each parent's arc among children proportionally to species count.
+    distributing each parent's arc among children by the square root of species count.
     """
     angles: dict[str, tuple[float, float]] = {}
 
@@ -81,15 +72,15 @@ def assign_angles(
                 .iter_rows(named=True)
             )
             child_data = [
-                (row["lineage"], counts.get(row["lineage"], 0), row["hue"])
+                (row["lineage"], math.sqrt(counts.get(row["lineage"], 0)), row["hue"])
                 for row in children
             ]
             child_data.sort(key=lambda x: x[2])  # sort by hue → similar colours stay adjacent
 
             total = sum(c[1] for c in child_data) or 1
             cursor = p_start
-            for lineage, count, _ in child_data:
-                span = p_span * count / total
+            for lineage, weight, _ in child_data:
+                span = p_span * weight / total
                 angles[lineage] = (cursor, cursor + span)
                 cursor += span
 
@@ -124,29 +115,33 @@ def draw_ring(
             bottom=r_inner,
             color=colour,
             edgecolor="white",
-            linewidth=0.25,
+            linewidth=0.25 if span > 0.017 else 0,   # outlines would hide thin wedges
             align="center",
         )
 
         if label and span >= MIN_LABEL_SPAN:
+            # Angles run clockwise from the top; turn text to read along the radius,
+            # flipping it on the left half so it is never upside down
             mid = start + span / 2
-            deg = np.degrees(mid)
-            rotation = deg - 90 if deg <= 180 else deg + 90
+            deg = np.degrees(mid) % 360
+            rotation = 90 - deg if deg < 180 else 270 - deg
             ax.text(
                 mid,
-                r_outer + 0.03,
+                (r_inner + r_outer) / 2,
                 row["name"],
                 ha="center",
                 va="center",
-                fontsize=5.5,
+                fontsize=9,
+                color="white",
                 rotation=rotation,
                 rotation_mode="anchor",
+                path_effects=[pe.withStroke(linewidth=2, foreground="black")],
             )
 
 
 def main() -> None:
-    print(f"Loading taxa from {DB_PATH} ...")
-    df = load_taxa(DB_PATH)
+    print(f"Loading taxa from {PALETTE_PATH} ...")
+    df = load_palette()
     print(f"  {len(df):,} taxa loaded")
 
     print("Computing species counts ...")
@@ -159,27 +154,14 @@ def main() -> None:
     fig, ax = plt.subplots(figsize=(14, 14), subplot_kw=dict(projection="polar"))
     ax.set_theta_zero_location("N")
     ax.set_theta_direction(-1)
-    ax.set_ylim(0, 1.05)
+    ax.set_ylim(0, RINGS["order"][1])
     ax.axis("off")
 
     for rank, (r_inner, r_outer) in RINGS.items():
         draw_ring(ax, df, rank, angles, r_inner, r_outer, label=(rank == "phylum"))
 
-    # Ring labels
-    label_r = 0.13
-    for rank, (r_inner, r_outer) in RINGS.items():
-        ax.text(
-            0, (r_inner + r_outer) / 2,
-            rank,
-            ha="center", va="center",
-            fontsize=7, color="#555555",
-            transform=ax.transData,
-        )
-
-    ax.set_title("GTDB Taxonomy Colour Key", pad=24, fontsize=15, fontweight="bold")
-
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(str(OUTPUT), dpi=150, bbox_inches="tight", facecolor="white")
+    plt.savefig(str(OUTPUT), dpi=150, bbox_inches="tight", pad_inches=0.1, facecolor="white")
     plt.close()
     print(f"Saved → {OUTPUT}")
 
