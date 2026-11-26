@@ -46,7 +46,7 @@ in the painting.
 - The palette is CC BY-SA 4.0 (derived from GTDB), unlike the MIT code
 
 **Phase 3 — Painting** (`paint/`)
-- `loader.py` reads an abundance TSV (full lineage or species name + count) and joins
+- `loader.py` reads an abundance TSV (full lineage or species name + any non-negative abundance; only proportions matter) and joins
   to the palette (`palette.py`; override with env var `GTDB_PALETTE_PATH`, e.g. via `docker-compose run -e`); exact GTDB names only;
   others are reported, not painted, unless `--fuzzy` (name → suffix → ancestor)
 - `spread.py` optionally stretches a sample's hues apart (`--spread`, off by default)

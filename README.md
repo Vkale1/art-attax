@@ -91,7 +91,9 @@ docker-compose run --rm art-attax python -m paint.key
 ## Input format
 
 A tab-separated file with no header (a header row is skipped if present): one taxon
-per line, then a count. Use the full GTDB lineage, or a species name.
+per line, then its abundance. Use the full GTDB lineage, or a species name. Abundance can be
+read counts, fractions (`0.42`) or percentages (`42.0`): only proportions matter, so use one
+unit throughout a file.
 
 ```
 d__Bacteria;p__Bacteroidota;c__Bacteroidia;o__Bacteroidales;f__Bacteroidaceae;g__Bacteroides;s__Bacteroides fragilis	42180

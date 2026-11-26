@@ -45,7 +45,7 @@ def export_palette() -> None:
 
 @app.command()
 def paint(
-    abundance: Path = typer.Argument(..., help="Abundance TSV (taxon<TAB>count)"),
+    abundance: Path = typer.Argument(..., help="Abundance TSV (taxon<TAB>abundance; counts, fractions or percentages)"),
     output: Path = typer.Option(None, help="Output PNG path (default: outputs/<stem>.png)"),
     width: int = typer.Option(2400, help="Canvas width in pixels"),
     height: int = typer.Option(3200, help="Canvas height in pixels"),
@@ -67,7 +67,11 @@ def paint(
         output = OUTPUT_DIR / f"{abundance.stem}.png"
 
     print(f"Loading abundance data from {abundance} ...")
-    taxa = load(abundance, fuzzy=fuzzy)
+    try:
+        taxa = load(abundance, fuzzy=fuzzy)
+    except ValueError as err:
+        print(f"ERROR: {err}", file=sys.stderr)
+        raise typer.Exit(1)
     print(f"  {taxa.height} taxa matched")
     if taxa.is_empty():
         print("ERROR: nothing to paint — no taxa matched", file=sys.stderr)

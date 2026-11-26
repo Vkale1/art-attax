@@ -2,7 +2,10 @@
 Load an abundance TSV and join to the palette to produce a colour-enriched DataFrame.
 
 Abundance TSV format (tab-separated, optional header):
-    lineage_or_name  <TAB>  count
+    lineage_or_name  <TAB>  abundance
+
+Abundance can be any non-negative number: read counts, relative abundance (0.42),
+percentages (42.0), coverage... Only proportions matter, so use one unit per file.
 
 Only exact GTDB names are painted by default: a full lineage (blank trailing ranks
 like g__;s__ are fine), or a single name such as "Escherichia coli" or "g__Bacteroides".
@@ -37,7 +40,7 @@ def load(abundance_tsv: Path, palette_path: Path = PALETTE_PATH, fuzzy: bool = F
     palette = load_palette(palette_path).drop("parent_lineage")
     matcher = _Matcher(palette)
 
-    counts: dict[str, int] = {}
+    counts: dict[str, float] = {}
     how: dict[str, list[tuple[str, str | None]]] = defaultdict(list)
     for taxon, count in raw.select("taxon", "count").iter_rows():
         lineage, method = matcher.match(taxon)
@@ -48,7 +51,7 @@ def load(abundance_tsv: Path, palette_path: Path = PALETTE_PATH, fuzzy: bool = F
 
     matched = pl.DataFrame(
         {"lineage": list(counts), "count": list(counts.values())},
-        schema={"lineage": pl.String, "count": pl.Int64},
+        schema={"lineage": pl.String, "count": pl.Float64},
     )
     return (
         matched
@@ -142,13 +145,22 @@ def _report(how: dict[str, list[tuple[str, str | None]]], fuzzy: bool) -> None:
 
 
 def _read_abundance(path: Path) -> pl.DataFrame:
-    raw = pl.read_csv(path, separator="\t", has_header=False, new_columns=["taxon", "count"])
+    raw = pl.read_csv(
+        path, separator="\t", has_header=False, new_columns=["taxon", "count"],
+        infer_schema=False, quote_char=None,
+    ).with_columns(pl.col("taxon", "count").str.strip_chars())
+    raw = raw.with_columns(pl.col("count").cast(pl.Float64, strict=False).alias("value"))
 
-    # If first row looks like a header, drop it
-    if raw["count"].dtype == pl.String:
+    # If the first row isn't a number, it's a header
+    if raw.height and raw["value"][0] is None:
         raw = raw.slice(1)
-        raw = raw.with_columns(pl.col("count").cast(pl.Int64))
-    else:
-        raw = raw.with_columns(pl.col("count").cast(pl.Int64))
 
-    return raw.filter(pl.col("count") > 0)
+    bad = raw.filter(pl.col("value").is_null() | pl.col("value").is_nan() | pl.col("value").is_infinite() | (pl.col("value") < 0))
+    if bad.height:
+        rows = [f"{taxon}\t{count}" for taxon, count in bad.select("taxon", "count").head(5).iter_rows()]
+        raise ValueError(
+            f"{bad.height} rows in {path} don't have a valid abundance (a number, 0 or more):\n    "
+            + "\n    ".join(rows)
+        )
+
+    return raw.select("taxon", pl.col("value").alias("count")).filter(pl.col("count") > 0)
